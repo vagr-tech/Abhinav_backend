@@ -2,7 +2,7 @@
 // Use this in getVisits, getShopsOutstanding, etc. instead of calling Zoho directly
 
 const { GetCommand, ScanCommand } = require("@aws-sdk/lib-dynamodb");
-const ddb = require("../config/dynamo");
+const ddb = require("./config/dynamo");
 
 const CACHE_TABLE = "abhinav_zoho_cache";
 
