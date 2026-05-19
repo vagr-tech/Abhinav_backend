@@ -756,7 +756,7 @@ exports.getShopByGst = async (req, res) => {
           TableName: SHOP_TABLE,
           // ✅ Exclude shopImage — each item stays tiny, more items per page
           ProjectionExpression:
-            "pk, sk, shop_name, address, primaryPhone, secondaryPhone, gstNumber, companyId",
+            "pk, sk, shop_name, address, primaryPhone, secondaryPhone, gstNumber, companyId, segment",
           FilterExpression:
             "sk = :profile AND gstNumber = :gst AND companyId = :cid",
           ExpressionAttributeValues: {
@@ -791,6 +791,7 @@ exports.getShopByGst = async (req, res) => {
         primaryPhone: foundShop.primaryPhone,
         secondaryPhone: foundShop.secondaryPhone,
         gstNumber: foundShop.gstNumber,
+        segment: foundShop.segment,
       },
     });
   } catch (e) {
