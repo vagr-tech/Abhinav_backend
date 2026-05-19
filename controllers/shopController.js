@@ -759,11 +759,13 @@ exports.getShopByGst = async (req, res) => {
             "pk, sk, shop_name, address, primaryPhone, secondaryPhone, gstNumber, companyId, #seg",
           FilterExpression:
             "sk = :profile AND gstNumber = :gst AND companyId = :cid",
+          ExpressionAttributeNames: {
+            "#seg": "segment", // ✅ Names (# aliases)
+          },
           ExpressionAttributeValues: {
             ":profile": "PROFILE",
             ":gst": trimmed,
             ":cid": req.user.companyId,
-            "#seg": "segment",
           },
           ExclusiveStartKey: lastKey,
         }),
