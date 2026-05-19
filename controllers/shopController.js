@@ -740,59 +740,57 @@ exports.getShopByGst = async (req, res) => {
     const { gstNumber } = req.params;
     const trimmed = gstNumber.trim().toUpperCase();
 
-    // 🔥 LOG THE TABLE NAME
-    console.log("TABLE:", SHOP_TABLE);
-    console.log("GST:", trimmed);
+    if (!trimmed || trimmed.length !== 15) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid GST number",
+      });
+    }
 
-    // 🔥 SCAN WITHOUT ANY FILTER — just count all items
-    const testResult = await ddb.send(
-      new ScanCommand({
-        TableName: SHOP_TABLE,
-        Limit: 5,
-      }),
-    );
-    console.log(
-      "TOTAL SAMPLE ITEMS:",
-      JSON.stringify(
-        testResult.Items?.map((i) => ({
-          pk: i.pk,
-          gstNumber: i.gstNumber,
-          sk: i.sk,
-        })),
-      ),
-    );
+    let lastKey = undefined;
+    let foundShop = null;
 
-    // ✅ BYPASS companyId filter temporarily to isolate the bug
-    const result = await ddb.send(
-      new ScanCommand({
-        TableName: SHOP_TABLE,
-        FilterExpression: "sk = :profile AND gstNumber = :gst",
-        ExpressionAttributeValues: {
-          ":profile": "PROFILE",
-          ":gst": trimmed,
-        },
-      }),
-    );
+    do {
+      const result = await ddb.send(
+        new ScanCommand({
+          TableName: SHOP_TABLE,
+          // ✅ Exclude shopImage — each item stays tiny, more items per page
+          ProjectionExpression:
+            "pk, sk, shop_name, address, primaryPhone, secondaryPhone, gstNumber, companyId",
+          FilterExpression:
+            "sk = :profile AND gstNumber = :gst AND companyId = :cid",
+          ExpressionAttributeValues: {
+            ":profile": "PROFILE",
+            ":gst": trimmed,
+            ":cid": req.user.companyId,
+          },
+          ExclusiveStartKey: lastKey,
+        }),
+      );
 
-    console.log("FOUND:", result.Items?.length, JSON.stringify(result.Items));
+      if (result.Items && result.Items.length > 0) {
+        foundShop = result.Items[0];
+        break;
+      }
 
-    if (!result.Items || result.Items.length === 0) {
+      lastKey = result.LastEvaluatedKey;
+    } while (lastKey);
+
+    if (!foundShop) {
       return res.status(404).json({
         success: false,
         message: "No shop found with this GST number",
       });
     }
 
-    const shop = result.Items[0];
-
     return res.status(200).json({
       success: true,
       data: {
-        shop_name: shop.shop_name,
-        address: shop.address,
-        primaryPhone: shop.primaryPhone,
-        secondaryPhone: shop.secondaryPhone,
-        gstNumber: shop.gstNumber,
+        shop_name: foundShop.shop_name,
+        address: foundShop.address,
+        primaryPhone: foundShop.primaryPhone,
+        secondaryPhone: foundShop.secondaryPhone,
+        gstNumber: foundShop.gstNumber,
       },
     });
   } catch (e) {
