@@ -1,20 +1,59 @@
 // zohoCacheJob.js
-// Run this at midnight via node-cron
-// npm install node-cron
+
+require("dotenv").config();
 
 const cron = require("node-cron");
-const { getAccessToken } = require("./services/zohoService");
-const { PutCommand, ScanCommand } = require("@aws-sdk/lib-dynamodb");
-const ddb = require("./config/dynamo");
+const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
+const {
+  DynamoDBDocumentClient,
+  PutCommand,
+  ScanCommand,
+} = require("@aws-sdk/lib-dynamodb");
 const axios = require("axios");
 
-const CACHE_TABLE = "abhinav_zoho_cache"; // separate table or same table with different pk
+const client = new DynamoDBClient({
+  region: "ap-south-1",
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  },
+});
+const ddb = DynamoDBDocumentClient.from(client);
 
-// ─── Fetch ALL contacts from Zoho ─────────────────────────
+const SHOP_TABLE = "abhinav_shops";
+const CACHE_TABLE = "abhinav_zoho_cache";
+
+// ─── Zoho Token ───────────────────────────────────────────
+let cachedToken = null;
+let tokenExpiresAt = null;
+
+const getAccessToken = async () => {
+  if (cachedToken && tokenExpiresAt && Date.now() < tokenExpiresAt - 60000) {
+    return cachedToken;
+  }
+  const res = await axios.post(
+    "https://accounts.zoho.in/oauth/v2/token",
+    null,
+    {
+      params: {
+        refresh_token: process.env.ZOHO_REFRESH_TOKEN,
+        client_id: process.env.ZOHO_CLIENT_ID,
+        client_secret: process.env.ZOHO_CLIENT_SECRET,
+        grant_type: "refresh_token",
+      },
+    },
+  );
+  if (res.data.error) throw new Error(`Zoho token error: ${res.data.error}`);
+  cachedToken = res.data.access_token;
+  tokenExpiresAt = Date.now() + (res.data.expires_in || 3600) * 1000;
+  console.log("✅ Zoho token refreshed");
+  return cachedToken;
+};
+
+// ─── Fetch ALL Zoho contacts (paginated) ──────────────────
 const fetchAllZohoContacts = async (accessToken) => {
   let page = 1;
-  let allContacts = [];
-
+  let all = [];
   while (true) {
     const res = await axios.get("https://www.zohoapis.in/books/v3/contacts", {
       headers: { Authorization: `Zoho-oauthtoken ${accessToken}` },
@@ -24,20 +63,17 @@ const fetchAllZohoContacts = async (accessToken) => {
         per_page: 200,
       },
     });
-
     const contacts = res.data.contacts || [];
-    allContacts.push(...contacts);
-
-    // Zoho pagination: if less than per_page returned, we're done
+    all.push(...contacts);
     if (contacts.length < 200) break;
     page++;
   }
-
-  return allContacts;
+  console.log(`📋 Zoho contacts fetched: ${all.length}`);
+  return all;
 };
 
 // ─── Fetch invoices for one contact ───────────────────────
-const fetchInvoicesForContact = async (contactId, accessToken) => {
+const fetchInvoices = async (contactId, accessToken) => {
   const res = await axios.get("https://www.zohoapis.in/books/v3/invoices", {
     headers: { Authorization: `Zoho-oauthtoken ${accessToken}` },
     params: {
@@ -45,25 +81,41 @@ const fetchInvoicesForContact = async (contactId, accessToken) => {
       customer_id: contactId,
     },
   });
-
   return res.data.invoices || [];
 };
 
-// ─── Main cache builder ────────────────────────────────────
+// ─── Main Cache Builder ────────────────────────────────────
 const buildZohoCache = async () => {
+  console.log("===========================================");
   console.log("🕛 Starting Zoho cache build...");
+  console.log(`   Time: ${new Date().toISOString()}`);
+  console.log("===========================================\n");
 
   try {
+    // Step 1: Zoho contacts fetch (WITH gst_no only)
+    console.log("🔑 Getting Zoho access token...");
     const accessToken = await getAccessToken();
 
-    // Step 1: Get all DB shops (to know which GSTs to cache)
+    console.log("📡 Fetching Zoho contacts...");
+    const allContacts = await fetchAllZohoContacts(accessToken);
+
+    // ✅ GST உள்ள contacts மட்டும் எடு
+    const zohoContactsWithGST = allContacts.filter((c) => c.gst_no);
+    console.log(`🗺️  Zoho contacts with GST: ${zohoContactsWithGST.length}`);
+
+    if (zohoContactsWithGST.length === 0) {
+      console.log("⚠️  No Zoho contacts with GST — nothing to cache");
+      return;
+    }
+
+    // Step 2: DB shops — GST map build
+    console.log("\n📦 Fetching shops from DB...");
     let shops = [];
     let lastKey;
-
     do {
       const result = await ddb.send(
         new ScanCommand({
-          TableName: "abhinav_shops",
+          TableName: SHOP_TABLE,
           FilterExpression:
             "sk = :profile AND (attribute_not_exists(isDeleted) OR isDeleted = :false)",
           ExpressionAttributeValues: {
@@ -77,88 +129,52 @@ const buildZohoCache = async () => {
       lastKey = result.LastEvaluatedKey;
     } while (lastKey);
 
-    console.log(`📦 Found ${shops.length} shops in DB`);
-
-    // Step 2: Get all Zoho contacts once
-    const allContacts = await fetchAllZohoContacts(accessToken);
-    console.log(`📋 Fetched ${allContacts.length} contacts from Zoho`);
-
-    // Build a map: gst_no → contact
-    const gstMap = {};
-    const nameMap = {};
-    for (const c of allContacts) {
-      if (c.gst_no) gstMap[c.gst_no.toUpperCase()] = c;
-      if (c.contact_name) nameMap[c.contact_name.toLowerCase()] = c;
-    }
-
-    // Step 3: For each shop, match + fetch invoices + save to cache
-    let saved = 0;
-    let unmatched = 0;
-
-    // TTL = next midnight (seconds)
-    const tomorrow = new Date();
-    tomorrow.setHours(24, 0, 0, 0);
-    const ttl = Math.floor(tomorrow.getTime() / 1000);
-
+    // ✅ DB shops GST map
+    const dbGstMap = {};
     for (const shop of shops) {
-      const gstNumber = (shop.gstNumber || shop.gst_number || "").toUpperCase();
-      const shopName = (shop.shop_name || "").toLowerCase();
+      const gst = (shop.gstNumber || shop.gst_number || "").toUpperCase();
+      if (gst) dbGstMap[gst] = shop;
+    }
+    console.log(`✅ DB shops with GST: ${Object.keys(dbGstMap).length}`);
 
-      // Match by GST first, then name
-      const contact =
-        (gstNumber && gstMap[gstNumber]) ||
-        (shopName && nameMap[shopName]) ||
-        null;
+    // Step 3: Zoho contacts-ஐ loop — DB match இருந்தா மட்டும் cache
+    console.log("\n💾 Building cache (Zoho-driven)...\n");
 
-      if (!contact) {
-        unmatched++;
-        // Save unmatched record so API knows quickly
-        await ddb.send(
-          new PutCommand({
-            TableName: CACHE_TABLE,
-            Item: {
-              pk: `ZOHO_CACHE#${gstNumber || shop.shop_id}`,
-              sk: "DATA",
-              shop_id: shop.shop_id,
-              shop_name: shop.shop_name,
-              matched: false,
-              cached_at: new Date().toISOString(),
-              ttl,
-            },
-          }),
-        );
+    let cached = 0;
+    let skipped = 0;
+
+    for (const contact of zohoContactsWithGST) {
+      const zohoGst = contact.gst_no.toUpperCase();
+      const shop = dbGstMap[zohoGst] || null;
+
+      // ✅ DB-ல் இல்லன்னா skip — invoice call வேண்டாம்
+      if (!shop) {
+        skipped++;
         continue;
       }
 
-      // Fetch invoices for matched contact
-      const invoices = await fetchInvoicesForContact(
-        contact.contact_id,
-        accessToken,
-      );
+      // Rate limit avoid
+      await new Promise((r) => setTimeout(r, 200));
 
-      const totalBilled = invoices.reduce(
-        (sum, inv) => sum + (inv.total || 0),
-        0,
-      );
-      const outstanding = invoices.reduce(
-        (sum, inv) => sum + (inv.balance || 0),
-        0,
-      );
-
-      const cacheKey = gstNumber || shop.shop_id;
+      // ✅ DB match ஆனவங்களுக்கு மட்டும் invoice fetch
+      const invoices = await fetchInvoices(contact.contact_id, accessToken);
+      const totalBilled = invoices.reduce((s, i) => s + (i.total || 0), 0);
+      const outstanding = invoices.reduce((s, i) => s + (i.balance || 0), 0);
 
       await ddb.send(
         new PutCommand({
           TableName: CACHE_TABLE,
           Item: {
-            pk: `ZOHO_CACHE#${cacheKey}`,
+            pk: `ZOHO_CACHE#${zohoGst}`,
             sk: "DATA",
             shop_id: shop.shop_id,
             shop_name: shop.shop_name,
+            gst: zohoGst,
+            companyId: shop.companyId,
             matched: true,
-            match_type: gstNumber && contact.gst_no ? "gst" : "name",
+            match_type: "gst",
             zoho_name: contact.contact_name,
-            zoho_gst: contact.gst_no || null,
+            zoho_gst: contact.gst_no,
             total_billed: totalBilled,
             outstanding,
             invoice_count: invoices.length,
@@ -170,26 +186,40 @@ const buildZohoCache = async () => {
               status: inv.status,
             })),
             cached_at: new Date().toISOString(),
-            ttl, // DynamoDB TTL — auto-delete next day
           },
         }),
       );
 
-      saved++;
+      console.log(`✅ ${shop.shop_name} → ${zohoGst}`);
+      cached++;
     }
 
-    console.log(
-      `✅ Cache built: ${saved} matched, ${unmatched} unmatched, TTL: ${new Date(ttl * 1000).toISOString()}`,
-    );
+    console.log("\n===========================================");
+    console.log(`✅ Cache build complete!`);
+    console.log(`   Cached : ${cached}  (DB + Zoho both matched)`);
+    console.log(`   Skipped: ${skipped} (Zoho-ல் இருக்கு, DB-ல் இல்லை)`);
+    console.log("===========================================\n");
   } catch (err) {
     console.error("❌ Cache build failed:", err.message);
   }
 };
 
-// ─── Cron: run at 12:00 AM every day ──────────────────────
-cron.schedule("0 0 * * *", () => {
+// ─── Cron: every day midnight ─────────────────────────────
+// cron.schedule("0 0 * * *", () => {
+//   console.log("⏰ Midnight cron triggered");
+//   buildZohoCache();
+// });
+// ✅ Test-க்கு — 2 minutes later fire ஆகும்
+cron.schedule("*/2 * * * *", () => {
+  console.log("🕛 Cron triggered at:", new Date().toISOString());
   buildZohoCache();
 });
 
-// ─── Also export for manual trigger ───────────────────────
+console.log("✅ Zoho cache cron scheduled (midnight daily)");
+
+// ─── Manual trigger: node zohoCacheJob.js ─────────────────
+if (require.main === module) {
+  buildZohoCache().then(() => process.exit(0));
+}
+
 module.exports = { buildZohoCache };
