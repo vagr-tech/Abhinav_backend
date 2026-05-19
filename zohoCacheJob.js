@@ -210,10 +210,10 @@ cron.schedule("0 0 * * *", () => {
   buildZohoCache();
 });
 
-cron.schedule("*/2 * * * *", () => {
-  console.log("🕛 Cron triggered at:", new Date().toISOString());
-  buildZohoCache();
-});
+// cron.schedule("*/2 * * * *", () => {
+//   console.log("🕛 Cron triggered at:", new Date().toISOString());
+//   buildZohoCache();
+// });
 
 console.log("✅ Zoho cache cron scheduled (midnight daily)");
 

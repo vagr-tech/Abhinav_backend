@@ -141,7 +141,7 @@ exports.addShop = async (req, res) => {
       shopType: shopType || "office",
 
       gstType: gstType || "non_gst",
-      gstNumber: gstNumber || "",
+      gstNumber: (gstNumber || "").trim().toUpperCase(),
 
       status: "pending",
       isDeleted: false,
@@ -625,9 +625,14 @@ exports.updateShop = async (req, res) => {
       });
     }
 
+    // ✅ Auto-detect gstType based on gstNumber
+    const cleanGst = (gstNumber || "").trim().toUpperCase();
+    const gstType = cleanGst.length === 15 ? "gst" : "non_gst";
+
     let updateExp =
       "SET shop_name = :shop_name, address = :address, #seg = :segment, " +
-      "primaryPhone = :primaryPhone, secondaryPhone = :secondaryPhone, gstNumber = :gstNumber";
+      "primaryPhone = :primaryPhone, secondaryPhone = :secondaryPhone, " +
+      "gstNumber = :gstNumber, gstType = :gstType";
 
     const attrNames = { "#seg": "segment" };
 
@@ -637,10 +642,10 @@ exports.updateShop = async (req, res) => {
       ":segment": segment,
       ":primaryPhone": primaryPhone || "",
       ":secondaryPhone": secondaryPhone || "",
-      ":gstNumber": gstNumber || "",
+      ":gstNumber": cleanGst, // ✅ always uppercase
+      ":gstType": gstType, // ✅ auto-set
     };
 
-    // Only update lat/lng if provided
     if (lat !== undefined && lng !== undefined) {
       updateExp += ", lat = :lat, lng = :lng";
       attrValues[":lat"] = Number(lat);
@@ -733,30 +738,26 @@ exports.updateShopImage = async (req, res) => {
 exports.getShopByGst = async (req, res) => {
   try {
     const { gstNumber } = req.params;
+    const trimmed = gstNumber.trim().toUpperCase();
 
-    if (!gstNumber || gstNumber.trim().length < 15) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid GST number",
-      });
-    }
+    console.log("🔍 GST Lookup:", trimmed);
+    console.log("🔍 companyId from token:", req.user.companyId);
 
-    // ✅ DynamoDB Scan (same pattern as rest of your controller)
     const result = await ddb.send(
       new ScanCommand({
         TableName: SHOP_TABLE,
         FilterExpression:
-          "sk = :profile AND gstNumber = :gst AND #companyId = :cid",
-        ExpressionAttributeNames: {
-          "#companyId": "companyId",
-        },
+          "sk = :profile AND gstNumber = :gst AND companyId = :cid",
         ExpressionAttributeValues: {
           ":profile": "PROFILE",
-          ":gst": gstNumber.trim().toUpperCase(),
+          ":gst": trimmed,
           ":cid": req.user.companyId,
         },
       }),
     );
+
+    console.log("✅ Items found:", result.Items?.length);
+    console.log("✅ Raw:", JSON.stringify(result.Items));
 
     if (!result.Items || result.Items.length === 0) {
       return res.status(404).json({
