@@ -344,7 +344,20 @@ exports.getVisits = async (req, res) => {
               sales: {
                 total_sales: cache.total_billed || 0,
                 invoice_count: cache.invoice_count || 0,
-                invoices: cache.invoices || [],
+                invoices: (cache.invoices || []).filter((inv) => {
+                  const invDate = new Date(inv.date || inv.invoice_date || "");
+                  const visitDate = new Date(visit.createdAt);
+
+                  // Visit date - 0 days to + 7 days
+                  const from = new Date(visitDate);
+                  from.setHours(0, 0, 0, 0); // Visit day start
+
+                  const to = new Date(visitDate);
+                  to.setDate(to.getDate() + 7); // +7 days
+                  to.setHours(23, 59, 59, 999); // Day end
+
+                  return invDate >= from && invDate <= to;
+                }),
               },
             };
           }),
