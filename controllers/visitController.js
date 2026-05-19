@@ -363,6 +363,7 @@ exports.getVisits = async (req, res) => {
 
             return {
               shopName,
+              visitId: visit.visit_id || visit.sk, // ✅ unique visit id
               gstNumber,
               sales: {
                 total_sales: totalSales,
