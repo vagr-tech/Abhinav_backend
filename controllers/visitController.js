@@ -332,32 +332,42 @@ exports.getVisits = async (req, res) => {
             ).trim();
             const shopName = visit.shop_name || visit.shopName || "";
 
-            // ✅ GST இல்லாட்டி skip — shopId வச்சு தேடவே வேண்டாம்
             if (!gstNumber) return null;
 
             const cache = await getZohoCacheForShop(gstNumber, null);
             if (!cache) return null;
 
+            // ✅ Visit date IST → UTC midnight
+            const visitDateIST = new Date(
+              new Date(visit.createdAt).toLocaleDateString("en-CA", {
+                timeZone: "Asia/Kolkata",
+              }),
+            );
+
+            const toDate = new Date(visitDateIST);
+            toDate.setDate(toDate.getDate() + 7);
+
+            // ✅ Filter invoices: visit date to +7 days only
+            const filteredInvoices = (cache.invoices || []).filter((inv) => {
+              if (!inv.date) return false;
+              const invDate = new Date(inv.date); // "2026-05-16" → UTC midnight
+              return invDate >= visitDateIST && invDate <= toDate;
+            });
+
+            const totalSales = filteredInvoices.reduce(
+              (sum, inv) => sum + (inv.total || 0),
+              0,
+            );
+
+            if (filteredInvoices.length === 0) return null; // ✅ Invoice இல்லன்னா skip
+
             return {
               shopName,
               gstNumber,
               sales: {
-                total_sales: cache.total_billed || 0,
-                invoice_count: cache.invoice_count || 0,
-                invoices: (cache.invoices || []).filter((inv) => {
-                  const invDate = new Date(inv.date || inv.invoice_date || "");
-                  const visitDate = new Date(visit.createdAt);
-
-                  // Visit date - 0 days to + 7 days
-                  const from = new Date(visitDate);
-                  from.setHours(0, 0, 0, 0); // Visit day start
-
-                  const to = new Date(visitDate);
-                  to.setDate(to.getDate() + 7); // +7 days
-                  to.setHours(23, 59, 59, 999); // Day end
-
-                  return invDate >= from && invDate <= to;
-                }),
+                total_sales: totalSales,
+                invoice_count: filteredInvoices.length,
+                invoices: filteredInvoices,
               },
             };
           }),
