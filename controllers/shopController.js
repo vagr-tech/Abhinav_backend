@@ -740,6 +740,28 @@ exports.getShopByGst = async (req, res) => {
     const { gstNumber } = req.params;
     const trimmed = gstNumber.trim().toUpperCase();
 
+    // 🔥 LOG THE TABLE NAME
+    console.log("TABLE:", SHOP_TABLE);
+    console.log("GST:", trimmed);
+
+    // 🔥 SCAN WITHOUT ANY FILTER — just count all items
+    const testResult = await ddb.send(
+      new ScanCommand({
+        TableName: SHOP_TABLE,
+        Limit: 5,
+      }),
+    );
+    console.log(
+      "TOTAL SAMPLE ITEMS:",
+      JSON.stringify(
+        testResult.Items?.map((i) => ({
+          pk: i.pk,
+          gstNumber: i.gstNumber,
+          sk: i.sk,
+        })),
+      ),
+    );
+
     // ✅ BYPASS companyId filter temporarily to isolate the bug
     const result = await ddb.send(
       new ScanCommand({
