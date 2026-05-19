@@ -740,24 +740,19 @@ exports.getShopByGst = async (req, res) => {
     const { gstNumber } = req.params;
     const trimmed = gstNumber.trim().toUpperCase();
 
-    console.log("🔍 GST Lookup:", trimmed);
-    console.log("🔍 companyId from token:", req.user.companyId);
-
+    // ✅ BYPASS companyId filter temporarily to isolate the bug
     const result = await ddb.send(
       new ScanCommand({
         TableName: SHOP_TABLE,
-        FilterExpression:
-          "sk = :profile AND gstNumber = :gst AND companyId = :cid",
+        FilterExpression: "sk = :profile AND gstNumber = :gst",
         ExpressionAttributeValues: {
           ":profile": "PROFILE",
           ":gst": trimmed,
-          ":cid": req.user.companyId,
         },
       }),
     );
 
-    console.log("✅ Items found:", result.Items?.length);
-    console.log("✅ Raw:", JSON.stringify(result.Items));
+    console.log("FOUND:", result.Items?.length, JSON.stringify(result.Items));
 
     if (!result.Items || result.Items.length === 0) {
       return res.status(404).json({
