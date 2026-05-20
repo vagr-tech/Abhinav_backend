@@ -1,5 +1,6 @@
 require("dotenv").config();
 require("./zohoCacheJob");
+const { startShopSyncCron } = require("./syncShopDetailsFromZoho");
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
@@ -86,4 +87,5 @@ const PORT = process.env.PORT || 8000;
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  startShopSyncCron();
 });
