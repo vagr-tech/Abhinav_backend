@@ -122,7 +122,7 @@ async function updateShopFromZoho(pk, zohoContact) {
 // MAIN CRON JOB — RUNS EVERY DAY AT 2AM
 // ==========================================
 function startShopSyncCron() {
-  cron.schedule("*/2 * * *", async () => {
+  cron.schedule("*/2 * * * *", async () => {
     console.log("🔄 [CRON] Starting Zoho shop sync...");
 
     try {
