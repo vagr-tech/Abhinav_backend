@@ -5,6 +5,26 @@ const Location = require("../models/locationModel");
 const todayIST = () =>
   new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
+// Helper function - get the relevant attendance date
+// If current time is between midnight and 4 AM IST, check yesterday's date
+function getAttendanceDateIST() {
+  const now = new Date();
+
+  // Convert to IST (UTC+5:30)
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const istTime = new Date(now.getTime() + istOffset);
+
+  const hours = istTime.getUTCHours();
+
+  // Between midnight (0:00) and 4:00 AM IST → look up yesterday
+  if (hours < 4) {
+    istTime.setUTCDate(istTime.getUTCDate() - 1);
+  }
+
+  // Return as YYYY-MM-DD
+  return istTime.toISOString().split("T")[0];
+}
+
 // ─── CHECK IN ───────────────────────────────────────────────
 module.exports.checkIn = async (req, res) => {
   const { lat, lng } = req.body;
@@ -67,7 +87,7 @@ module.exports.checkOut = async (req, res) => {
   const { lat, lng } = req.body;
 
   // ✅ FIXED - user_id use பண்றோம்
-  const uid = req.user.id;
+  const uid = req.user.user_id || req.user.id;
   const companyId = req.user.companyId;
 
   if (!lat || !lng) {
@@ -96,7 +116,7 @@ module.exports.checkOut = async (req, res) => {
     return res.json({ ok: false, error: "outside_all_locations" });
   }
 
-  const attendance = await Attendance.get(uid, todayIST());
+  const attendance = await Attendance.get(uid, getAttendanceDateIST());
 
   if (!attendance) {
     return res.json({ ok: false, error: "no_checkin_found" });
