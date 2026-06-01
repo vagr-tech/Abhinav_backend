@@ -232,7 +232,16 @@ cron.schedule(
 // ============================
 exports.saveVisit = async (req, res) => {
   try {
-    const { shop_id, shop_name, result, distance } = req.body;
+    const {
+      shop_id,
+      shop_name,
+      result,
+      distance,
+      shopLat,
+      shopLng,
+      userLat,
+      userLng,
+    } = req.body;
 
     const salesmanId = req.user.id;
     const salesmanName = req.user.name;
@@ -268,6 +277,10 @@ exports.saveVisit = async (req, res) => {
       status: "completed",
       createdAt: now,
       expireAt,
+      shopLat: shopLat ?? shop?.lat ?? 0, // ← prefer body, fallback to DB
+      shopLng: shopLng ?? shop?.lng ?? 0,
+      userLat: userLat ?? 0,
+      userLng: userLng ?? 0,
     };
 
     await ddb.send(new PutCommand({ TableName: TABLE_NAME, Item: item }));
@@ -301,6 +314,8 @@ exports.saveVisit = async (req, res) => {
             lat: shop?.lat || 0,
             lng: shop?.lng || 0,
             distance: distance || 0,
+            shopLat: shopLat ?? shop?.lat ?? 0, // ← shop coords passed along
+            shopLng: shopLng ?? shop?.lng ?? 0,
             locationId: `SHOP#${shop_id}`,
             locationName: shop_name,
           });
