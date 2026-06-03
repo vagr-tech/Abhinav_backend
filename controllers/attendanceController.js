@@ -1,36 +1,108 @@
+// attendanceController.js
+// Changes from original:
+//   1. checkIn  → checks BOTH office locations + shop locations
+//   2. checkOut → checks BOTH office locations + shop locations
+//   3. saveVisit auto checkin/checkout block → REMOVED
+
 const { Attendance } = require("../models/attendanceModel");
 const { calculateDistance } = require("../utils/distanceCalculator");
 const Location = require("../models/locationModel");
+const ddb = require("../config/dynamo");
+const { ScanCommand } = require("@aws-sdk/lib-dynamodb");
+
+const SHOP_TABLE = "abhinav_shops";
 
 const todayIST = () =>
   new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
-// Helper function - get the relevant attendance date
-// If current time is between midnight and 4 AM IST, check yesterday's date
 function getAttendanceDateIST() {
   const now = new Date();
-
-  // Convert to IST (UTC+5:30)
   const istOffset = 5.5 * 60 * 60 * 1000;
   const istTime = new Date(now.getTime() + istOffset);
-
   const hours = istTime.getUTCHours();
-
-  // Between midnight (0:00) and 4:00 AM IST → look up yesterday
   if (hours < 4) {
     istTime.setUTCDate(istTime.getUTCDate() - 1);
   }
-
-  // Return as YYYY-MM-DD
   return istTime.toISOString().split("T")[0];
+}
+
+// ─────────────────────────────────────────────────────────────
+// Helper: check lat/lng against office locations + shop locations
+// Returns matched location info or null
+// ─────────────────────────────────────────────────────────────
+async function findMatchedLocation(lat, lng, companyId) {
+  // ── 1. Check office locations (existing) ──
+  const officeLocations = await Location.getByCompany(companyId);
+
+  if (officeLocations && officeLocations.length > 0) {
+    for (const loc of officeLocations) {
+      const d = calculateDistance(lat, lng, loc.lat, loc.lng);
+      if (d <= loc.radius) {
+        return {
+          locationId: loc.locationId,
+          locationName: loc.name,
+          distance: Math.round(d),
+          type: "office",
+        };
+      }
+    }
+  }
+
+  // ── 2. Check shop locations ──
+  // Scan approved shops for this company
+  let items = [];
+  let lastKey = undefined;
+
+  do {
+    const result = await ddb.send(
+      new ScanCommand({
+        TableName: SHOP_TABLE,
+        FilterExpression:
+          "sk = :profile AND #companyId = :cid AND #status = :approved AND (attribute_not_exists(isDeleted) OR isDeleted = :false)",
+        ExpressionAttributeNames: {
+          "#companyId": "companyId",
+          "#status": "status",
+        },
+        ExpressionAttributeValues: {
+          ":profile": "PROFILE",
+          ":cid": companyId,
+          ":approved": "approved",
+          ":false": false,
+        },
+        // Only fetch fields we need — faster scan
+        ProjectionExpression: "shop_id, shop_name, lat, lng, #status",
+        ExclusiveStartKey: lastKey,
+      }),
+    );
+    items.push(...(result.Items || []));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+
+  // Default shop radius: 200 meters
+  // You can make this configurable later
+  const SHOP_RADIUS_METERS = 200;
+
+  for (const shop of items) {
+    if (!shop.lat || !shop.lng) continue;
+    const d = calculateDistance(lat, lng, shop.lat, shop.lng);
+    if (d <= SHOP_RADIUS_METERS) {
+      return {
+        locationId: `SHOP#${shop.shop_id}`,
+        locationName: shop.shop_name,
+        distance: Math.round(d),
+        type: "shop",
+      };
+    }
+  }
+
+  return null; // not in any office or shop
 }
 
 // ─── CHECK IN ───────────────────────────────────────────────
 module.exports.checkIn = async (req, res) => {
   const { lat, lng } = req.body;
 
-  // ✅ FIXED - user_id use பண்றோம்
-  const uid = req.user.user_id || req.user.id; // fallback to id if user_id is not present
+  const uid = req.user.user_id || req.user.id;
   const userName = req.user.name || "UNKNOWN";
   const companyId = req.user.companyId;
   const companyName = req.user.companyName || "";
@@ -39,25 +111,10 @@ module.exports.checkIn = async (req, res) => {
     return res.json({ ok: false, error: "location_required" });
   }
 
-  const locations = await Location.getByCompany(companyId);
+  // Check both office + shop locations
+  const matched = await findMatchedLocation(lat, lng, companyId);
 
-  if (!locations || locations.length === 0) {
-    return res.json({ ok: false, error: "no_locations_configured" });
-  }
-
-  let matchedLocation = null;
-  let distance = null;
-
-  for (const loc of locations) {
-    const d = calculateDistance(lat, lng, loc.lat, loc.lng);
-    if (d <= loc.radius) {
-      matchedLocation = loc;
-      distance = Math.round(d);
-      break;
-    }
-  }
-
-  if (!matchedLocation) {
+  if (!matched) {
     return res.json({ ok: false, error: "outside_all_locations" });
   }
 
@@ -66,16 +123,20 @@ module.exports.checkIn = async (req, res) => {
       uid,
       userName,
       companyId,
-      companyName, // ✅ save பண்றோம்
+      companyName,
       date: todayIST(),
       lat,
       lng,
-      distance,
-      locationId: matchedLocation.locationId,
-      locationName: matchedLocation.name,
+      distance: matched.distance,
+      locationId: matched.locationId,
+      locationName: matched.locationName,
     });
 
-    res.json({ ok: true, locationName: matchedLocation.name });
+    res.json({
+      ok: true,
+      locationName: matched.locationName,
+      locationType: matched.type, // "office" or "shop" — Flutter uses this
+    });
   } catch (e) {
     console.error("CHECKIN ERROR:", e);
     res.json({ ok: false, error: "already_checked_in" });
@@ -86,7 +147,6 @@ module.exports.checkIn = async (req, res) => {
 module.exports.checkOut = async (req, res) => {
   const { lat, lng } = req.body;
 
-  // ✅ FIXED - user_id use பண்றோம்
   const uid = req.user.user_id || req.user.id;
   const companyId = req.user.companyId;
 
@@ -94,25 +154,10 @@ module.exports.checkOut = async (req, res) => {
     return res.json({ ok: false, error: "location_required" });
   }
 
-  const locations = await Location.getByCompany(companyId);
+  // Check both office + shop locations
+  const matched = await findMatchedLocation(lat, lng, companyId);
 
-  if (!locations || locations.length === 0) {
-    return res.json({ ok: false, error: "no_locations_configured" });
-  }
-
-  let matchedLocation = null;
-  let distance = null;
-
-  for (const loc of locations) {
-    const d = calculateDistance(lat, lng, loc.lat, loc.lng);
-    if (d <= loc.radius) {
-      matchedLocation = loc;
-      distance = Math.round(d);
-      break;
-    }
-  }
-
-  if (!matchedLocation) {
+  if (!matched) {
     return res.json({ ok: false, error: "outside_all_locations" });
   }
 
@@ -130,19 +175,23 @@ module.exports.checkOut = async (req, res) => {
       date: attendanceDate,
       lat,
       lng,
-      locationId: matchedLocation.locationId,
-      locationName: matchedLocation.name,
-      distance,
+      locationId: matched.locationId,
+      locationName: matched.locationName,
+      distance: matched.distance,
     });
 
-    res.json({ ok: true, locationName: matchedLocation.name });
+    res.json({
+      ok: true,
+      locationName: matched.locationName,
+      locationType: matched.type,
+    });
   } catch (e) {
     console.error("CHECKOUT ERROR:", e);
     res.json({ ok: false, error: "already_checked_out" });
   }
 };
 
-// ─── ATTENDANCE DASHBOARD ────────────────────────────────
+// ─── ATTENDANCE DASHBOARD (unchanged) ───────────────────────
 module.exports.getAttendanceReport = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
@@ -152,28 +201,19 @@ module.exports.getAttendanceReport = async (req, res) => {
       return res.json({ ok: false, error: "startDate & endDate required" });
     }
 
-    const start = startDate; // "2026-04-01"
-    const end = endDate; // "2026-04-30"
-
-    // ✅ GSI1 - DATE range scan
-    const { ScanCommand } = require("@aws-sdk/lib-dynamodb");
-    const ddb = require("../config/dynamo");
-
     const result = await ddb.send(
       new ScanCommand({
         TableName: "abhinav_attendance",
         FilterExpression: "companyId = :cid AND GSI1PK BETWEEN :start AND :end",
         ExpressionAttributeValues: {
           ":cid": companyId,
-          ":start": `DATE#${start}`,
-          ":end": `DATE#${end}`,
+          ":start": `DATE#${startDate}`,
+          ":end": `DATE#${endDate}`,
         },
       }),
     );
 
     const records = result.Items || [];
-
-    // ✅ Per user summary
     const userMap = {};
 
     records.forEach((r) => {
@@ -181,12 +221,7 @@ module.exports.getAttendanceReport = async (req, res) => {
       const date = r.GSI1PK?.replace("DATE#", "") || "";
 
       if (!userMap[name]) {
-        userMap[name] = {
-          name,
-          totalDays: 0,
-          presentDays: [],
-          records: [],
-        };
+        userMap[name] = { name, totalDays: 0, presentDays: [], records: [] };
       }
 
       userMap[name].totalDays += 1;
@@ -201,12 +236,10 @@ module.exports.getAttendanceReport = async (req, res) => {
       });
     });
 
-    const attendanceReport = Object.values(userMap);
-
     res.json({
       ok: true,
       totalRecords: records.length,
-      attendanceReport,
+      attendanceReport: Object.values(userMap),
     });
   } catch (e) {
     console.error("ATTENDANCE REPORT ERROR:", e);
