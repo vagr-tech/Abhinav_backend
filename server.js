@@ -17,6 +17,7 @@ const pendingRoutes = require("./routes/pendingRoutes");
 
 const attendanceRoutes = require("./routes/attendanceRoutes");
 const locationRoutes = require("./routes/locationRoutes");
+const liveRoutes = require("./routes/LiveloactionRoutes");
 
 const app = express();
 // =======================
@@ -59,6 +60,7 @@ app.use("/api/visits", visitRoutes);
 
 app.use("/api/attendance", attendanceRoutes);
 app.use("/api/locations", locationRoutes);
+app.use("/api", liveRoutes);
 
 // =======================
 // DEFAULT ROUTE
