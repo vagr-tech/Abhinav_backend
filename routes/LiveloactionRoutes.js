@@ -16,8 +16,12 @@ const auth = require("../middleware/auth");
 // Salesman → POST every 1 minute
 router.post("/live-location", auth(["salesman"]), updateLiveLocation);
 
-// Manager/Master → GET for map display
-router.get("/live-location", auth(["manager", "master"]), getLiveLocations);
+// Salesman + Manager + Master → GET
+router.get(
+  "/live-location",
+  auth(["salesman", "manager", "master"]),
+  getLiveLocations,
+);
 
 // Salesman → DELETE on logout
 router.delete("/live-location", auth(["salesman"]), clearLiveLocation);
