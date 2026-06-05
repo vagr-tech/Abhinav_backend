@@ -36,9 +36,7 @@ exports.updateLiveLocation = async (req, res) => {
 
     const newPoint = { lat: Number(lat), lng: Number(lng), t: nowEpoch };
 
-    // 1 hour-க்கு ஒரு point மட்டும்
-    const shouldAppend = nowEpoch - lastPointEpoch >= 60 * 60;
-    const path = shouldAppend ? [...prevPath, newPoint] : prevPath;
+    const path = [...prevPath, newPoint];
 
     await ddb.send(
       new PutCommand({
