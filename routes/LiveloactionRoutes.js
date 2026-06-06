@@ -9,21 +9,22 @@ const { authenticate } = require("../middleware/auth"); // your existing auth mi
 const {
   updateLiveLocation,
   getLiveLocations,
-  clearLiveLocation,
+  checkoutLiveLocation,
 } = require("../controllers/LivelocationController");
+
 const auth = require("../middleware/auth");
 
-// Salesman → POST every 1 minute
 router.post("/live-location", auth(["salesman"]), updateLiveLocation);
-
-// Salesman + Manager + Master → GET
 router.get(
   "/live-location",
   auth(["salesman", "manager", "master"]),
   getLiveLocations,
 );
-
-// Salesman → DELETE on logout
-router.delete("/live-location", auth(["salesman"]), clearLiveLocation);
+router.patch(
+  "/live-location/checkout",
+  auth(["salesman"]),
+  checkoutLiveLocation,
+); // ← NEW
+// router.delete — remove பண்ணு
 
 module.exports = router;
