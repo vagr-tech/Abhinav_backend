@@ -87,8 +87,13 @@ exports.getLiveLocations = async (req, res) => {
           Key: { pk: req.user.id, sk: "LIVE" },
         }),
       );
-      const locations = result.Item ? [_clean(result.Item)] : [];
-      return res.json({ success: true, locations });
+
+      // ✅ isCheckedOut ஆனா empty return — dot மறையும்
+      if (!result.Item || result.Item.isCheckedOut) {
+        return res.json({ success: true, locations: [] });
+      }
+
+      return res.json({ success: true, locations: [_clean(result.Item)] });
     }
 
     // Manager / Master → scan
