@@ -205,15 +205,15 @@ const buildZohoCache = async () => {
 };
 
 // ─── Cron: every day midnight ─────────────────────────────
-cron.schedule("0 0 * * *", () => {
-  console.log("⏰ Midnight cron triggered");
-  buildZohoCache();
-});
-
-// cron.schedule("*/2 * * * *", () => {
-//   console.log("🕛 Cron triggered at:", new Date().toISOString());
+// cron.schedule("0 0 * * *", () => {
+//   console.log("⏰ Midnight cron triggered");
 //   buildZohoCache();
 // });
+
+cron.schedule("*/2 * * * *", () => {
+  console.log("🕛 Cron triggered at:", new Date().toISOString());
+  buildZohoCache();
+});
 
 console.log("✅ Zoho cache cron scheduled (midnight daily)");
 
