@@ -245,7 +245,7 @@ exports.getVisits = async (req, res) => {
               ""
             ).trim();
             const shopName = visit.shop_name || visit.shopName || "";
-
+            const shopId = visit.shop_id || visit.shopId || "";
             if (!gstNumber && !shopId) return null; // rendும் illainа mattum skip
             const cache = await getZohoCacheForShop(
               gstNumber || null,
