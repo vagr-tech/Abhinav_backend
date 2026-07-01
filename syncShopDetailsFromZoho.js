@@ -75,7 +75,7 @@ function matchByPhone(allContacts, phone) {
   );
 }
 
-async function getAllUnsyncedGstShops() {
+async function getAllUnsyncedShops() {
   const shops = [];
   let lastKey = undefined;
 
@@ -84,7 +84,7 @@ async function getAllUnsyncedGstShops() {
       new ScanCommand({
         TableName: SHOP_TABLE,
         FilterExpression:
-          "sk = :profile AND gstType = :gst AND attribute_exists(gstNumber) AND (attribute_not_exists(zohoSynced) OR zohoSynced = :notSynced)",
+          "sk = :profile AND (attribute_not_exists(zohoSynced) OR zohoSynced = :notSynced)",
         ProjectionExpression:
           "pk, sk, shop_name, address, primaryPhone, gstNumber, companyId, #seg",
         ExpressionAttributeNames: {
@@ -92,7 +92,6 @@ async function getAllUnsyncedGstShops() {
         },
         ExpressionAttributeValues: {
           ":profile": "PROFILE",
-          ":gst": "gst",
           ":notSynced": false,
         },
         ExclusiveStartKey: lastKey,
@@ -138,9 +137,9 @@ function startShopSyncCron() {
     try {
       const accessToken = await getZohoAccessToken();
       const allContacts = await fetchAllZohoContacts(accessToken);
-      const shops = await getAllUnsyncedGstShops();
+      const shops = await getAllUnsyncedShops();
 
-      console.log(`📦 Total unsynced GST shops: ${shops.length}`);
+      console.log(`📦 Total unsynced shops: ${shops.length}`);
 
       let updated = 0;
       let skipped = 0;
@@ -159,7 +158,9 @@ function startShopSyncCron() {
 
         if (!zohoContact && shop.primaryPhone) {
           console.log(
-            `🔁 No GST match for ${shop.gstNumber || "N/A"} — trying phone: ${shop.primaryPhone}`,
+            hasValidGst
+              ? `🔁 No GST match for ${shop.gstNumber} — trying phone: ${shop.primaryPhone}`
+              : `📞 No GST on record — matching by phone: ${shop.primaryPhone}`,
           );
           zohoContact = matchByPhone(allContacts, shop.primaryPhone);
           if (zohoContact) matchedBy = "phone";
