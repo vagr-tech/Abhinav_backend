@@ -45,20 +45,25 @@ const getAccessToken = async () => {
   }
 };
 
+// ─── Helper: Normalize phone number (last 10 digits only) ──
+// Strips +91, spaces, dashes etc. so "+91 98765 43210" and
+// "9876543210" are treated as the same number.
+const normalizePhone = (phone) => {
+  if (!phone) return "";
+  const digitsOnly = phone.toString().replace(/\D/g, "");
+  return digitsOnly.slice(-10); // last 10 digits
+};
+
 // ─── Find Contact by GST Number ────────────────────────────
 // Zoho Books stores GST as "gst_no" on the contact object
 const findContactByGST = async (gstNumber, accessToken) => {
   if (!gstNumber || gstNumber.trim() === "") return null;
 
   try {
-    // Fetch all contacts and filter by gst_no
-    // Zoho doesn't support direct gst_no filter param, so we search by name loosely
-    // and then confirm gst_no match — OR use contact_name_contains as fallback
     const res = await axios.get("https://www.zohoapis.in/books/v3/contacts", {
       headers: { Authorization: `Zoho-oauthtoken ${accessToken}` },
       params: {
         organization_id: process.env.ZOHO_ORG_ID,
-        // Zoho Books supports gst_no as a search param in some versions
         gst_no: gstNumber.trim().toUpperCase(),
       },
     });
@@ -80,8 +85,59 @@ const findContactByGST = async (gstNumber, accessToken) => {
   }
 };
 
-// ─── Get Shop Sales (by GST number, fallback to name) ──────
-const getShopSales = async (shopName, accessToken, visitDate, gstNumber) => {
+// ─── Find Contact by Phone Number ──────────────────────────
+// Zoho Books contact object usually has "phone" and "mobile" fields.
+// We fetch by "phone" search param (Zoho supports it) and then
+// confirm by comparing normalized last-10-digit numbers against
+// both phone and mobile, since search param alone can be loose.
+const findContactByPhone = async (phoneNumber, accessToken) => {
+  if (!phoneNumber || phoneNumber.trim() === "") return null;
+
+  const targetPhone = normalizePhone(phoneNumber);
+  if (!targetPhone) return null;
+
+  try {
+    const res = await axios.get("https://www.zohoapis.in/books/v3/contacts", {
+      headers: { Authorization: `Zoho-oauthtoken ${accessToken}` },
+      params: {
+        organization_id: process.env.ZOHO_ORG_ID,
+        phone: phoneNumber.trim(),
+      },
+    });
+
+    const contacts = res.data.contacts || [];
+
+    // ✅ Confirm exact match on phone OR mobile (normalized)
+    const matched = contacts.find(
+      (c) =>
+        normalizePhone(c.phone) === targetPhone ||
+        normalizePhone(c.mobile) === targetPhone,
+    );
+
+    if (matched) return matched;
+
+    // ⚠️ Fallback: some Zoho orgs don't support "phone" as a filter
+    // param and just ignore it (returning all contacts). In that
+    // case the .find() above already handles filtering correctly,
+    // so if nothing matched here, there's genuinely no match.
+    return null;
+  } catch (err) {
+    console.error(
+      "❌ findContactByPhone ERROR:",
+      err.response?.data || err.message,
+    );
+    return null;
+  }
+};
+
+// ─── Get Shop Sales (GST → Phone → Name) ────────────────────
+const getShopSales = async (
+  shopName,
+  accessToken,
+  visitDate,
+  gstNumber,
+  phoneNumber,
+) => {
   const fromDate = visitDate ? new Date(visitDate) : new Date();
   const toDate = new Date(fromDate);
   toDate.setDate(fromDate.getDate() + 7);
@@ -90,20 +146,37 @@ const getShopSales = async (shopName, accessToken, visitDate, gstNumber) => {
 
   try {
     let customer = null;
+    let matchType = null;
 
     // ✅ Step 1: Try GST match first
     if (gstNumber && gstNumber.trim() !== "") {
       customer = await findContactByGST(gstNumber, accessToken);
       if (customer) {
+        matchType = "gst";
         console.log(
           `✅ GST match found: ${customer.contact_name} for GST: ${gstNumber}`,
         );
       } else {
-        console.warn(`⚠️ No GST match for ${gstNumber}, falling back to name`);
+        console.warn(`⚠️ No GST match for ${gstNumber}, trying phone`);
       }
     }
 
-    // ✅ Step 2: Fallback to name if GST not found
+    // ✅ Step 2: Fallback to phone number
+    if (!customer && phoneNumber && phoneNumber.trim() !== "") {
+      customer = await findContactByPhone(phoneNumber, accessToken);
+      if (customer) {
+        matchType = "phone";
+        console.log(
+          `✅ Phone match found: ${customer.contact_name} for phone: ${phoneNumber}`,
+        );
+      } else {
+        console.warn(
+          `⚠️ No phone match for ${phoneNumber}, falling back to name`,
+        );
+      }
+    }
+
+    // ✅ Step 3: Fallback to name
     if (!customer && shopName) {
       const customerRes = await axios.get(
         "https://www.zohoapis.in/books/v3/contacts",
@@ -117,13 +190,19 @@ const getShopSales = async (shopName, accessToken, visitDate, gstNumber) => {
       );
       const customers = customerRes.data.contacts || [];
       customer = customers[0] || null;
+      if (customer) matchType = "name";
     }
 
     if (!customer) {
-      return { matched: false, shop_name: shopName, gst_number: gstNumber };
+      return {
+        matched: false,
+        shop_name: shopName,
+        gst_number: gstNumber,
+        phone_number: phoneNumber,
+      };
     }
 
-    // ✅ Step 3: Fetch invoices for matched customer
+    // ✅ Step 4: Fetch invoices for matched customer
     const invoiceRes = await axios.get(
       "https://www.zohoapis.in/books/v3/invoices",
       {
@@ -144,9 +223,10 @@ const getShopSales = async (shopName, accessToken, visitDate, gstNumber) => {
 
     return {
       matched: true,
-      match_type: gstNumber && customer.gst_no ? "gst" : "name",
+      match_type: matchType,
       zoho_name: customer.contact_name,
       zoho_gst: customer.gst_no || null,
+      zoho_phone: customer.phone || customer.mobile || null,
       from_date: formatDate(fromDate),
       to_date: formatDate(toDate),
       invoice_count: invoices.length,
@@ -166,6 +246,7 @@ const getShopSales = async (shopName, accessToken, visitDate, gstNumber) => {
       matched: false,
       shop_name: shopName,
       gst_number: gstNumber,
+      phone_number: phoneNumber,
       error: JSON.stringify(detail),
     };
   }
@@ -203,7 +284,7 @@ const getSalesOrders = async () => {
   }
 };
 
-// ─── Get Outstanding for ALL shops (by GST, fallback name) ─
+// ─── Get Outstanding for ALL shops (GST → Phone → Name) ────
 const getShopsOutstanding = async (shops) => {
   const accessToken = await getAccessToken();
   const results = [];
@@ -211,15 +292,25 @@ const getShopsOutstanding = async (shops) => {
   for (const shop of shops) {
     const shopName = shop.shop_name;
     const gstNumber = shop.gstNumber || shop.gst_number || "";
+    const phoneNumber =
+      shop.phoneNumber || shop.phone_number || shop.phone || "";
 
-    if (!shopName && !gstNumber) continue;
+    if (!shopName && !gstNumber && !phoneNumber) continue;
 
     try {
       let customer = null;
+      let matchType = null;
 
       // ✅ Try GST first
       if (gstNumber) {
         customer = await findContactByGST(gstNumber, accessToken);
+        if (customer) matchType = "gst";
+      }
+
+      // ✅ Fallback to phone
+      if (!customer && phoneNumber) {
+        customer = await findContactByPhone(phoneNumber, accessToken);
+        if (customer) matchType = "phone";
       }
 
       // ✅ Fallback to name
@@ -236,6 +327,7 @@ const getShopsOutstanding = async (shops) => {
         );
         const customers = customerRes.data.contacts || [];
         customer = customers[0] || null;
+        if (customer) matchType = "name";
       }
 
       if (!customer) {
@@ -276,9 +368,10 @@ const getShopsOutstanding = async (shops) => {
         shop_id: shop.shop_id,
         shop_name: shopName,
         matched: true,
-        match_type: gstNumber && customer.gst_no ? "gst" : "name",
+        match_type: matchType,
         zoho_name: customer.contact_name,
         zoho_gst: customer.gst_no || null,
+        zoho_phone: customer.phone || customer.mobile || null,
         total_billed: totalBilled,
         outstanding: outstanding,
         invoice_count: invoices.length,
@@ -305,4 +398,5 @@ module.exports = {
   getSalesOrders,
   getShopsOutstanding,
   findContactByGST,
+  findContactByPhone,
 };
