@@ -246,9 +246,11 @@ exports.getVisits = async (req, res) => {
             ).trim();
             const shopName = visit.shop_name || visit.shopName || "";
 
-            if (!gstNumber) return null;
-
-            const cache = await getZohoCacheForShop(gstNumber, null);
+            if (!gstNumber && !shopId) return null; // rendும் illainа mattum skip
+            const cache = await getZohoCacheForShop(
+              gstNumber || null,
+              shopId || null,
+            );
             if (!cache) return null;
 
             // ✅ Visit date IST → UTC midnight
