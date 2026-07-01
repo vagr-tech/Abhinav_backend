@@ -11,9 +11,6 @@ const client = new DynamoDBClient({ region: process.env.AWS_REGION });
 const ddb = DynamoDBDocumentClient.from(client);
 const SHOP_TABLE = process.env.SHOP_TABLE || "abhinav_shops";
 
-// ==========================================
-// STEP 1 — GET ZOHO ACCESS TOKEN
-// ==========================================
 async function getZohoAccessToken() {
   const res = await axios.post(
     `https://accounts.zoho.in/oauth/v2/token`,
@@ -30,75 +27,54 @@ async function getZohoAccessToken() {
   return res.data.access_token;
 }
 
-// ==========================================
-// STEP 2A — FETCH CONTACT FROM ZOHO BY GST
-// ==========================================
-async function fetchZohoContactByGst(gstNumber, accessToken) {
-  try {
-    const res = await axios.get(`https://www.zohoapis.in/books/v3/contacts`, {
-      headers: {
-        Authorization: `Zoho-oauthtoken ${accessToken}`,
-      },
+async function fetchAllZohoContacts(accessToken) {
+  let page = 1;
+  let all = [];
+  while (true) {
+    const res = await axios.get("https://www.zohoapis.in/books/v3/contacts", {
+      headers: { Authorization: `Zoho-oauthtoken ${accessToken}` },
       params: {
         organization_id: process.env.ZOHO_ORG_ID,
-        search_text: gstNumber,
+        page,
+        per_page: 200,
       },
     });
-
     const contacts = res.data.contacts || [];
-    return (
-      contacts.find(
-        (c) => (c.gst_no || "").toUpperCase() === gstNumber.toUpperCase(),
-      ) || null
-    );
-  } catch (e) {
-    console.error(`Zoho fetch failed for GST ${gstNumber}:`, e.message);
-    return null;
+    all.push(...contacts);
+    if (contacts.length < 200) break;
+    page++;
   }
+  console.log(`📋 Zoho contacts fetched (all): ${all.length}`);
+  return all;
 }
 
-// ==========================================
-// STEP 2B — FETCH CONTACT FROM ZOHO BY PHONE
-// ==========================================
-async function fetchZohoContactByPhone(phone, accessToken) {
+function normalizePhone(p) {
+  return (p || "").replace(/[\s\-]/g, "").replace(/^(\+91|91|0)/, "");
+}
+
+function matchByGst(allContacts, gstNumber) {
+  if (!gstNumber) return null;
+  return (
+    allContacts.find(
+      (c) => (c.gst_no || "").toUpperCase() === gstNumber.toUpperCase(),
+    ) || null
+  );
+}
+
+function matchByPhone(allContacts, phone) {
   if (!phone) return null;
-
-  // Normalize: strip spaces, dashes, leading country code or trunk prefix
-  const normalize = (p) => p.replace(/[\s\-]/g, "").replace(/^(\+91|91|0)/, "");
-  const normalizedInput = normalize(phone);
-
+  const normalizedInput = normalizePhone(phone);
   if (!normalizedInput) return null;
 
-  try {
-    const res = await axios.get(`https://www.zohoapis.in/books/v3/contacts`, {
-      headers: {
-        Authorization: `Zoho-oauthtoken ${accessToken}`,
-      },
-      params: {
-        organization_id: process.env.ZOHO_ORG_ID,
-        search_text: normalizedInput,
-      },
-    });
-
-    const contacts = res.data.contacts || [];
-
-    // Match against both phone and mobile fields after normalization
-    return (
-      contacts.find((c) => {
-        const zohoPhone = normalize(c.phone || "");
-        const zohoMobile = normalize(c.mobile || "");
-        return zohoPhone === normalizedInput || zohoMobile === normalizedInput;
-      }) || null
-    );
-  } catch (e) {
-    console.error(`Zoho fetch failed for phone ${phone}:`, e.message);
-    return null;
-  }
+  return (
+    allContacts.find((c) => {
+      const zohoPhone = normalizePhone(c.phone);
+      const zohoMobile = normalizePhone(c.mobile);
+      return zohoPhone === normalizedInput || zohoMobile === normalizedInput;
+    }) || null
+  );
 }
 
-// ==========================================
-// STEP 3 — GET UNSYNCED GST SHOPS (PAGINATED)
-// ==========================================
 async function getAllUnsyncedGstShops() {
   const shops = [];
   let lastKey = undefined;
@@ -134,9 +110,6 @@ async function getAllUnsyncedGstShops() {
   return shops;
 }
 
-// ==========================================
-// STEP 4 — UPDATE SHOP IN DYNAMODB
-// ==========================================
 async function updateShopFromZoho(pk, zohoContact, matchedBy) {
   const phone = zohoContact.phone || zohoContact.mobile || "";
 
@@ -152,21 +125,19 @@ async function updateShopFromZoho(pk, zohoContact, matchedBy) {
         ":phone": phone,
         ":synced": true,
         ":syncedAt": new Date().toISOString(),
-        ":matchedBy": matchedBy, // "gst" | "phone"
+        ":matchedBy": matchedBy,
       },
     }),
   );
 }
 
-// ==========================================
-// MAIN CRON JOB — RUNS EVERY DAY AT 2AM
-// ==========================================
 function startShopSyncCron() {
   cron.schedule("*/2 * * * *", async () => {
     console.log("🔄 [CRON] Starting Zoho shop sync...");
 
     try {
       const accessToken = await getZohoAccessToken();
+      const allContacts = await fetchAllZohoContacts(accessToken);
       const shops = await getAllUnsyncedGstShops();
 
       console.log(`📦 Total unsynced GST shops: ${shops.length}`);
@@ -179,26 +150,18 @@ function startShopSyncCron() {
         let zohoContact = null;
         let matchedBy = null;
 
-        // --- Try matching by GST first ---
         const hasValidGst = shop.gstNumber && shop.gstNumber.length === 15;
 
         if (hasValidGst) {
-          zohoContact = await fetchZohoContactByGst(
-            shop.gstNumber,
-            accessToken,
-          );
+          zohoContact = matchByGst(allContacts, shop.gstNumber);
           if (zohoContact) matchedBy = "gst";
         }
 
-        // --- Fallback: match by phone if GST lookup failed or GST missing ---
         if (!zohoContact && shop.primaryPhone) {
           console.log(
             `🔁 No GST match for ${shop.gstNumber || "N/A"} — trying phone: ${shop.primaryPhone}`,
           );
-          zohoContact = await fetchZohoContactByPhone(
-            shop.primaryPhone,
-            accessToken,
-          );
+          zohoContact = matchByPhone(allContacts, shop.primaryPhone);
           if (zohoContact) matchedBy = "phone";
         }
 
@@ -220,9 +183,6 @@ function startShopSyncCron() {
           console.error(`❌ Update failed for pk=${shop.pk}:`, e.message);
           failed++;
         }
-
-        // ✅ Avoid Zoho rate limits
-        await new Promise((r) => setTimeout(r, 300));
       }
 
       console.log(
@@ -233,7 +193,7 @@ function startShopSyncCron() {
     }
   });
 
-  console.log("⏰ Shop sync cron registered — runs daily at 2AM");
+  console.log("⏰ Shop sync cron registered");
 }
 
 module.exports = { startShopSyncCron };
