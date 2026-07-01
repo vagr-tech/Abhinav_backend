@@ -8,20 +8,36 @@ const CACHE_TABLE = "abhinav_zoho_cache";
 
 // ─── Read cache for ONE shop (by GST or shop_id) ──────────
 const getZohoCacheForShop = async (gstNumber, shopId) => {
-  const cacheKey = (gstNumber || shopId || "").toUpperCase();
-
   try {
-    const result = await ddb.send(
-      new GetCommand({
-        TableName: CACHE_TABLE,
-        Key: {
-          pk: `ZOHO_CACHE#${cacheKey}`,
-          sk: "DATA",
-        },
-      }),
-    );
+    // 1️⃣ Try GST-based key first (uppercase GST)
+    if (gstNumber) {
+      const result = await ddb.send(
+        new GetCommand({
+          TableName: CACHE_TABLE,
+          Key: {
+            pk: `ZOHO_CACHE#${gstNumber.toUpperCase()}`,
+            sk: "DATA",
+          },
+        }),
+      );
+      if (result.Item) return result.Item;
+    }
 
-    return result.Item || null;
+    // 2️⃣ Fallback: phone-matched shops are stored as ZOHO_CACHE#SHOP#<shop_id>
+    if (shopId) {
+      const result = await ddb.send(
+        new GetCommand({
+          TableName: CACHE_TABLE,
+          Key: {
+            pk: `ZOHO_CACHE#SHOP#${shopId}`,
+            sk: "DATA",
+          },
+        }),
+      );
+      if (result.Item) return result.Item;
+    }
+
+    return null;
   } catch (err) {
     console.error("Cache read error:", err.message);
     return null;
