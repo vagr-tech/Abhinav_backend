@@ -84,6 +84,13 @@ const fetchInvoices = async (contactId, accessToken) => {
   return res.data.invoices || [];
 };
 
+// ─── Phone normalize helper ────────────────────────────────
+const normalizePhone = (p) =>
+  (p || "")
+    .toString()
+    .replace(/[\s\-]/g, "")
+    .replace(/^(\+91|91|0)/, "");
+
 // ─── Main Cache Builder ────────────────────────────────────
 const buildZohoCache = async () => {
   console.log("===========================================");
@@ -92,23 +99,19 @@ const buildZohoCache = async () => {
   console.log("===========================================\n");
 
   try {
-    // Step 1: Zoho contacts fetch (WITH gst_no only)
+    // Step 1: Zoho contacts fetch (ALL contacts — gst and phone both needed)
     console.log("🔑 Getting Zoho access token...");
     const accessToken = await getAccessToken();
 
     console.log("📡 Fetching Zoho contacts...");
     const allContacts = await fetchAllZohoContacts(accessToken);
 
-    // ✅ GST உள்ள contacts மட்டும் எடு
-    const zohoContactsWithGST = allContacts.filter((c) => c.gst_no);
-    console.log(`🗺️  Zoho contacts with GST: ${zohoContactsWithGST.length}`);
-
-    if (zohoContactsWithGST.length === 0) {
-      console.log("⚠️  No Zoho contacts with GST — nothing to cache");
+    if (allContacts.length === 0) {
+      console.log("⚠️  No Zoho contacts fetched — nothing to cache");
       return;
     }
 
-    // Step 2: DB shops — GST map build
+    // Step 2: DB shops — GST map + Phone map build
     console.log("\n📦 Fetching shops from DB...");
     let shops = [];
     let lastKey;
@@ -135,17 +138,48 @@ const buildZohoCache = async () => {
       const gst = (shop.gstNumber || shop.gst_number || "").toUpperCase();
       if (gst) dbGstMap[gst] = shop;
     }
-    console.log(`✅ DB shops with GST: ${Object.keys(dbGstMap).length}`);
 
-    // Step 3: Zoho contacts-ஐ loop — DB match இருந்தா மட்டும் cache
+    // ✅ DB shops Phone map
+    const dbPhoneMap = {};
+    for (const shop of shops) {
+      const phone = normalizePhone(shop.primaryPhone || shop.secondaryPhone);
+      if (phone) dbPhoneMap[phone] = shop;
+    }
+
+    console.log(`✅ DB shops with GST: ${Object.keys(dbGstMap).length}`);
+    console.log(`✅ DB shops with Phone: ${Object.keys(dbPhoneMap).length}`);
+
+    // Step 3: Zoho contacts-ஐ loop — GST match first, phone fallback
     console.log("\n💾 Building cache (Zoho-driven)...\n");
 
     let cached = 0;
     let skipped = 0;
 
-    for (const contact of zohoContactsWithGST) {
-      const zohoGst = contact.gst_no.toUpperCase();
-      const shop = dbGstMap[zohoGst] || null;
+    for (const contact of allContacts) {
+      let shop = null;
+      let matchType = null;
+      let matchKey = null;
+
+      // Try GST match first
+      if (contact.gst_no) {
+        const zohoGst = contact.gst_no.toUpperCase();
+        shop = dbGstMap[zohoGst] || null;
+        if (shop) {
+          matchType = "gst";
+          matchKey = zohoGst;
+        }
+      }
+
+      // Fallback: phone match
+      if (!shop) {
+        const zohoPhone = normalizePhone(contact.phone);
+        const zohoMobile = normalizePhone(contact.mobile);
+        shop = dbPhoneMap[zohoPhone] || dbPhoneMap[zohoMobile] || null;
+        if (shop) {
+          matchType = "phone";
+          matchKey = zohoPhone || zohoMobile;
+        }
+      }
 
       // ✅ DB-ல் இல்லன்னா skip — invoice call வேண்டாம்
       if (!shop) {
@@ -161,20 +195,30 @@ const buildZohoCache = async () => {
       const totalBilled = invoices.reduce((s, i) => s + (i.total || 0), 0);
       const outstanding = invoices.reduce((s, i) => s + (i.balance || 0), 0);
 
+      // Cache key: GST match aana GST vachu, phone match aana shop_id vachu
+      const cacheKey =
+        matchType === "gst"
+          ? `ZOHO_CACHE#${matchKey}`
+          : `ZOHO_CACHE#SHOP#${shop.shop_id}`;
+
       await ddb.send(
         new PutCommand({
           TableName: CACHE_TABLE,
           Item: {
-            pk: `ZOHO_CACHE#${zohoGst}`,
+            pk: cacheKey,
             sk: "DATA",
             shop_id: shop.shop_id,
             shop_name: shop.shop_name,
-            gst: zohoGst,
+            gst:
+              matchType === "gst"
+                ? matchKey
+                : shop.gstNumber || shop.gst_number || "",
             companyId: shop.companyId,
             matched: true,
-            match_type: "gst",
+            match_type: matchType,
             zoho_name: contact.contact_name,
-            zoho_gst: contact.gst_no,
+            zoho_gst: contact.gst_no || "",
+            zoho_phone: contact.phone || contact.mobile || "",
             total_billed: totalBilled,
             outstanding,
             invoice_count: invoices.length,
@@ -190,31 +234,26 @@ const buildZohoCache = async () => {
         }),
       );
 
-      console.log(`✅ ${shop.shop_name} → ${zohoGst}`);
+      console.log(`✅ [${matchType}] ${shop.shop_name} → ${matchKey}`);
       cached++;
     }
 
     console.log("\n===========================================");
     console.log(`✅ Cache build complete!`);
-    console.log(`   Cached : ${cached}  (DB + Zoho both matched)`);
+    console.log(`   Cached : ${cached}  (DB + Zoho matched — gst or phone)`);
     console.log(`   Skipped: ${skipped} (Zoho-ல் இருக்கு, DB-ல் இல்லை)`);
     console.log("===========================================\n");
   } catch (err) {
-    console.error("❌ Cache build failed:", err.message);
+    console.error("❌ Cache build failed:", err.response?.data || err.message);
   }
 };
 
-// ─── Cron: every day midnight ─────────────────────────────
-// cron.schedule("0 0 * * *", () => {
-//   console.log("⏰ Midnight cron triggered");
-//   buildZohoCache();
-// });
-
-cron.schedule("1-59/2 * * * *", () => {
+// ─── Cron: every 2 minutes ─────────────────────────────────
+cron.schedule("*/2 * * * *", () => {
   console.log("🕛 Cron triggered at:", new Date().toISOString());
   buildZohoCache();
 });
 
-console.log("✅ Zoho cache cron scheduled (midnight daily)");
+console.log("✅ Zoho cache cron scheduled");
 
 module.exports = { buildZohoCache };
