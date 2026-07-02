@@ -233,7 +233,7 @@ async function syncVisitShopNames() {
 }
 
 function startShopSyncCron() {
-  cron.schedule("*/2 * * * *", async () => {
+  cron.schedule("0 0 * * *", async () => {
     console.log("🔄 [CRON] Starting Zoho shop sync...");
 
     try {
