@@ -130,8 +130,110 @@ async function updateShopFromZoho(pk, zohoContact, matchedBy) {
   );
 }
 
+// ─── Visit table shop_name sync helpers ────────────────────
+const VISIT_HISTORY_TABLE =
+  process.env.VISIT_HISTORY_TABLE || "abhinav_visit_history";
+
+async function getAllShopsNameMap() {
+  const map = {};
+  let lastKey;
+
+  do {
+    const result = await ddb.send(
+      new ScanCommand({
+        TableName: SHOP_TABLE,
+        FilterExpression: "sk = :profile",
+        ProjectionExpression: "shop_id, shop_name",
+        ExpressionAttributeValues: { ":profile": "PROFILE" },
+        ExclusiveStartKey: lastKey,
+      }),
+    );
+
+    for (const shop of result.Items || []) {
+      if (shop.shop_id) map[shop.shop_id] = shop.shop_name || "";
+    }
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+
+  console.log(`🏪 Shops loaded for name map: ${Object.keys(map).length}`);
+  return map;
+}
+
+async function getAllVisits() {
+  const visits = [];
+  let lastKey;
+
+  do {
+    const result = await ddb.send(
+      new ScanCommand({
+        TableName: VISIT_HISTORY_TABLE,
+        ProjectionExpression: "pk, sk, shop_id, shop_name",
+        ExclusiveStartKey: lastKey,
+      }),
+    );
+    visits.push(...(result.Items || []));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+
+  return visits;
+}
+
+async function syncVisitShopNames() {
+  console.log("\n🔄 Starting visit shop_name sync...");
+
+  try {
+    const shopNameMap = await getAllShopsNameMap();
+    const visits = await getAllVisits();
+
+    console.log(`📦 Total visits scanned: ${visits.length}`);
+
+    let updated = 0;
+    let skipped = 0;
+
+    for (const visit of visits) {
+      if (!visit.shop_id) {
+        skipped++;
+        continue;
+      }
+
+      const currentShopName = shopNameMap[visit.shop_id];
+
+      if (!currentShopName || currentShopName === visit.shop_name) {
+        skipped++;
+        continue;
+      }
+
+      try {
+        await ddb.send(
+          new UpdateCommand({
+            TableName: VISIT_HISTORY_TABLE,
+            Key: { pk: visit.pk, sk: visit.sk },
+            UpdateExpression: "SET shop_name = :name",
+            ExpressionAttributeValues: { ":name": currentShopName },
+          }),
+        );
+        console.log(
+          `✅ Visit name updated: "${visit.shop_name}" → "${currentShopName}" (shop_id=${visit.shop_id})`,
+        );
+        updated++;
+      } catch (e) {
+        console.error(
+          `❌ Visit update failed for pk=${visit.pk} sk=${visit.sk}:`,
+          e.message,
+        );
+      }
+    }
+
+    console.log(
+      `✅ Visit shop_name sync complete — Updated: ${updated} | Skipped: ${skipped}\n`,
+    );
+  } catch (err) {
+    console.error("❌ Visit shop_name sync failed:", err.message);
+  }
+}
+
 function startShopSyncCron() {
-  cron.schedule("0 0 * * *", async () => {
+  cron.schedule("*/2 * * * *", async () => {
     console.log("🔄 [CRON] Starting Zoho shop sync...");
 
     try {
@@ -187,14 +289,17 @@ function startShopSyncCron() {
       }
 
       console.log(
-        `✅ [CRON] Done — Updated: ${updated} | Skipped: ${skipped} | Failed: ${failed}`,
+        `✅ [CRON] Shop sync done — Updated: ${updated} | Skipped: ${skipped} | Failed: ${failed}`,
       );
+
+      // ✅ Shop names updated above — now propagate corrected names to visit history
+      await syncVisitShopNames();
     } catch (e) {
       console.error("❌ [CRON] Sync crashed:", e.message);
     }
   });
 
-  console.log("⏰ Shop sync cron registered");
+  console.log("⏰ Shop sync cron registered (with visit name sync)");
 }
 
 module.exports = { startShopSyncCron };

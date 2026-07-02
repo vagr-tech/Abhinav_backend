@@ -169,6 +169,8 @@ exports.saveVisit = async (req, res) => {
       segment: (shop?.segment || "").toLowerCase(),
       result: result || "matched",
       gstNumber: shop?.gstNumber || shop?.gst_number || "",
+      ownerPhone:
+        shop?.primaryPhone || shop?.ownerPhone || shop?.secondaryPhone || "",
       distance: distance || 0,
       status: "completed",
       createdAt: now,
