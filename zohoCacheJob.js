@@ -249,7 +249,7 @@ const buildZohoCache = async () => {
 };
 
 // ─── Cron: 2AM Daily ─────────────────────────────────
-cron.schedule("0 2 * * *", () => {
+cron.schedule("/3 * * * *", () => {
   console.log("🕛 Cron triggered at:", new Date().toISOString());
   buildZohoCache();
 });
