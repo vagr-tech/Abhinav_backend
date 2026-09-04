@@ -1,5 +1,6 @@
-require("dotenv").config();
-const ddb = require("./config/dynamo");
+const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, "../../.env") });
+const ddb = require("./dynamo");
 const { ListTablesCommand } = require("@aws-sdk/client-dynamodb");
 
 (async () => {

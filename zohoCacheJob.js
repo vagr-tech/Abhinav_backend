@@ -1,7 +1,7 @@
 // zohoCacheJob.js
 
-require("dotenv").config();
-
+const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, ".env") });
 const cron = require("node-cron");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const {

@@ -1,9 +1,9 @@
-require("dotenv").config();
-require("./zohoCacheJob");
-const { startShopSyncCron } = require("./syncShopDetailsFromZoho");
+const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, "../.env") });
+require("../zohoCacheJob");
+const { startShopSyncCron } = require("../syncShopDetailsFromZoho");
 const express = require("express");
 const cors = require("cors");
-const path = require("path");
 // ✅ ADD THIS
 const { sql, connectSQL } = require("./config/db-sql");
 // ROUTES
@@ -85,7 +85,7 @@ app.use("/api/csv", csvRoutes); // ← ADD
 // =======================
 // SERVER START (🔥 MUST BE LAST)
 // =======================
-const PORT = process.env.PORT || 8000;
+const PORT = process.env.PORT;
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);

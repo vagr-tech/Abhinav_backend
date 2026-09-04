@@ -45,6 +45,56 @@ const getAccessToken = async () => {
   }
 };
 
+// ─── Analytics Token Cache (separate from Books token) ─────
+let cachedAnalyticsToken = null;
+let analyticsTokenExpiresAt = null;
+
+const getAnalyticsAccessToken = async () => {
+  if (
+    cachedAnalyticsToken &&
+    analyticsTokenExpiresAt &&
+    Date.now() < analyticsTokenExpiresAt - 60000
+  ) {
+    return cachedAnalyticsToken;
+  }
+
+  try {
+    const response = await axios.post(
+      "https://accounts.zoho.in/oauth/v2/token",
+      null,
+      {
+        params: {
+          refresh_token: process.env.ZOHO_ANALYTICS_REFRESH_TOKEN,
+          client_id: process.env.ZOHO_SELF_CLIENT_ID,
+          client_secret: process.env.ZOHO_SELF_CLIENT_SECRET,
+          grant_type: "refresh_token",
+        },
+      },
+    );
+
+    const data = response.data;
+
+    if (data.error)
+      throw new Error(`Zoho Analytics token error: ${data.error}`);
+    if (!data.access_token)
+      throw new Error(
+        `No Analytics access token returned. Response: ${JSON.stringify(data)}`,
+      );
+
+    cachedAnalyticsToken = data.access_token;
+    analyticsTokenExpiresAt = Date.now() + (data.expires_in || 3600) * 1000;
+
+    console.log("✅ Zoho Analytics access token refreshed successfully");
+    return cachedAnalyticsToken;
+  } catch (err) {
+    const detail = err.response?.data || err.message;
+    console.error("❌ ZOHO ANALYTICS TOKEN ERROR:", JSON.stringify(detail));
+    throw new Error(
+      `Failed to get Zoho Analytics access token: ${JSON.stringify(detail)}`,
+    );
+  }
+};
+
 // ─── Helper: Normalize phone number (last 10 digits only) ──
 // Strips +91, spaces, dashes etc. so "+91 98765 43210" and
 // "9876543210" are treated as the same number.
@@ -392,6 +442,29 @@ const getShopsOutstanding = async (shops) => {
   return results;
 };
 
+// ─── Get Analytics Workspaces (sample function) ─────────────
+const getAnalyticsWorkspaces = async () => {
+  try {
+    const accessToken = await getAnalyticsAccessToken();
+
+    const response = await axios.get(
+      "https://analyticsapi.zoho.in/restapi/v2/workspaces",
+      {
+        headers: {
+          Authorization: `Zoho-oauthtoken ${accessToken}`,
+          "ZANALYTICS-ORGID": process.env.ZOHO_ORG_ID,
+        },
+      },
+    );
+
+    return response.data;
+  } catch (err) {
+    const detail = err.response?.data || err.message;
+    console.error("❌ ANALYTICS WORKSPACES ERROR:", JSON.stringify(detail));
+    throw err;
+  }
+};
+
 module.exports = {
   getAccessToken,
   getShopSales,
@@ -399,4 +472,6 @@ module.exports = {
   getShopsOutstanding,
   findContactByGST,
   findContactByPhone,
+  getAnalyticsAccessToken,
+  getAnalyticsWorkspaces,
 };
