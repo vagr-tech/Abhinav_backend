@@ -1,6 +1,9 @@
 const express = require("express");
 const router = express.Router();
-const { getSalesOrders } = require("../services/zohoService");
+const {
+  getSalesOrders,
+  syncZohoCustomers,
+} = require("../services/zohoService");
 
 // ✅ GET SALES ORDERS WITH FILTER + SEARCH + PAGINATION
 // Usage:
@@ -31,7 +34,7 @@ router.get("/shops-outstanding", async (req, res) => {
             ":false": false,
           },
           ExclusiveStartKey: lastKey,
-        })
+        }),
       );
       items.push(...(result.Items || []));
       lastKey = result.LastEvaluatedKey;
@@ -63,7 +66,6 @@ router.get("/shops-outstanding", async (req, res) => {
       },
       shops,
     });
-
   } catch (err) {
     console.error("❌ SHOPS OUTSTANDING ERROR:", err);
     res.status(500).json({ success: false, error: err.message });
@@ -79,16 +81,14 @@ router.get("/salesorders", async (req, res) => {
     // ── 1. Status Filter ──────────────────────────────
     if (status) {
       const statusFilter = status.toLowerCase();
-      orders = orders.filter(
-        (o) => o.status?.toLowerCase() === statusFilter
-      );
+      orders = orders.filter((o) => o.status?.toLowerCase() === statusFilter);
     }
 
     // ── 2. Shop Name Search ───────────────────────────
     if (search) {
       const searchTerm = search.toLowerCase();
       orders = orders.filter((o) =>
-        o.customer_name?.toLowerCase().includes(searchTerm)
+        o.customer_name?.toLowerCase().includes(searchTerm),
       );
     }
 
@@ -111,7 +111,7 @@ router.get("/salesorders", async (req, res) => {
     res.json({
       success: true,
       // Summary
-      summary,                        // { draft: 3, invoiced: 42, ... }
+      summary, // { draft: 3, invoiced: 42, ... }
       // Filter info
       filters: {
         status: status || "all",
@@ -127,7 +127,6 @@ router.get("/salesorders", async (req, res) => {
       // Orders
       orders: paginatedOrders,
     });
-
   } catch (err) {
     res.status(500).json({
       success: false,
@@ -183,6 +182,37 @@ router.get("/salesorders-summary", async (req, res) => {
       error: err.message,
     });
   }
+});
+
+// ─── POST /api/zoho/sync-customers ─────────────────────────
+// Zoho Books-ல் உள்ள எல்லா customers-ஐயும் DynamoDB-ல் sync பண்ணும்
+// New contact → INSERT | Existing → UPDATE
+// Fields: name, zoho_id, brand (tag), phone, salesman (tag)
+//
+// Manual trigger:  POST /api/zoho/sync-customers
+// Auto daily:      setupDailySyncTrigger() call பண்ணுங்க (server.js-ல்)
+router.post("/sync-customers", async (req, res) => {
+  try {
+    const results = await syncZohoCustomers();
+    res.json({
+      success: true,
+      message: "Zoho customer sync complete",
+      ...results,
+    });
+  } catch (err) {
+    console.error("❌ SYNC CUSTOMERS ERROR:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/zoho/sync-customers/status ───────────────────
+// Last sync எப்போ நடந்துச்சுன்னு check பண்ண
+router.get("/sync-customers/status", (req, res) => {
+  res.json({
+    success: true,
+    message: "Use POST /api/zoho/sync-customers to trigger a sync",
+    note: "Auto daily sync: server.js-ல் setupDailySyncTrigger() call பண்ணுங்க",
+  });
 });
 
 module.exports = router;

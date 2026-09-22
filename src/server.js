@@ -4,6 +4,8 @@ require("../zohoCacheJob");
 const { startShopSyncCron } = require("../syncShopDetailsFromZoho");
 const express = require("express");
 const cors = require("cors");
+const cron = require("node-cron"); // ✅ ADD
+const { syncZohoCustomers } = require("./services/zohoService"); // ✅ ADD
 // ✅ ADD THIS
 const { sql, connectSQL } = require("./config/db-sql");
 // ROUTES
@@ -90,4 +92,24 @@ const PORT = process.env.PORT;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   startShopSyncCron();
+
+  // ✅ Zoho Customer Sync — Daily 6:00 AM IST
+  // Zoho-ல் புதுசா add / update ஆன customers → zoho_customers table-ல் reflect ஆகும்
+  // cron format: second(opt) minute hour day month weekday
+  cron.schedule(
+    "0 0 6 * * *", // every day at 06:00:00
+    async () => {
+      console.log("⏰ [CRON] Zoho customer sync starting...");
+      try {
+        const result = await syncZohoCustomers();
+        console.log(
+          `✅ [CRON] Zoho sync done — added: ${result.added}, updated: ${result.updated}, errors: ${result.errors.length}`,
+        );
+      } catch (err) {
+        console.error("❌ [CRON] Zoho sync failed:", err.message);
+      }
+    },
+    { timezone: "Asia/Kolkata" }, // IST
+  );
+  console.log("⏰ Zoho customer sync cron scheduled — daily 6:00 AM IST");
 });

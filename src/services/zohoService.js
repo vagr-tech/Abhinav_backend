@@ -465,6 +465,138 @@ const getAnalyticsWorkspaces = async () => {
   }
 };
 
+// ─── Sync Zoho Customers → DynamoDB ────────────────────────
+// Zoho contacts tag-ல் இருந்து brand + salesman எடுக்கும்
+// DynamoDB-ல் இல்லாதது → PUT, இருப்பது → UPDATE
+// ─── Sync Zoho Customers → DynamoDB (zoho_customers table) ─
+//
+// Table: zoho_customers
+//   PK  = zoho_id (String)  ← Zoho contact_id, unique key
+//
+// Fields saved:
+//   zoho_id, name, phone, brand, salesman_name, synced_at, created_at
+//
+// Logic:
+//   Zoho-ல் இருக்கற contact → DB-ல் இருந்தா UPDATE, இல்லன்னா INSERT
+//   zoho_id மாறாது — மத்தது எல்லாம் latest Zoho data-ஆ update ஆகும்
+//
+const ZOHO_CUSTOMERS_TABLE = "zoho_customers";
+
+const syncZohoCustomers = async () => {
+  const accessToken = await getAccessToken();
+  const ddb = require("../config/dynamo");
+  const {
+    PutCommand,
+    UpdateCommand,
+    GetCommand,
+  } = require("@aws-sdk/lib-dynamodb");
+
+  const results = { added: 0, updated: 0, errors: [] };
+  let page = 1;
+  let hasMore = true;
+
+  while (hasMore) {
+    const res = await axios.get("https://www.zohoapis.in/books/v3/contacts", {
+      headers: { Authorization: `Zoho-oauthtoken ${accessToken}` },
+      params: {
+        organization_id: process.env.ZOHO_ORG_ID,
+        contact_type: "customer",
+        filter_by: "Status.All",
+        page,
+        per_page: 200,
+      },
+    });
+
+    const contacts = res.data.contacts || [];
+    if (contacts.length === 0) break;
+
+    for (const contact of contacts) {
+      try {
+        const zohoId = contact.contact_id;
+        const name = (contact.contact_name || "").trim();
+        const phone = normalizePhone(contact.phone || contact.mobile || "");
+        const tags = contact.tags || [];
+
+        // Tags-ல் இருந்து brand + salesman extract
+        // உங்க Zoho-ல் tag_name என்ன இருக்குன்னு பொருத்தி மாத்துங்க
+        let brand = "";
+        let salesman = "";
+        for (const tag of tags) {
+          const tagName = (tag.tag_name || "").toLowerCase();
+          if (tagName === "brand" || tagName === "company") {
+            brand = tag.tag_option_name || "";
+          }
+          if (tagName === "salesperson" || tagName === "salesman") {
+            salesman = tag.tag_option_name || "";
+          }
+        }
+
+        const now = new Date().toISOString();
+
+        // zoho_id-ஐ PK-ஆ use பண்றோம் (unique, மாறாது)
+        const existing = await ddb.send(
+          new GetCommand({
+            TableName: ZOHO_CUSTOMERS_TABLE,
+            Key: { zoho_id: zohoId },
+          }),
+        );
+
+        if (existing.Item) {
+          // ✅ Already exists → UPDATE latest Zoho data
+          await ddb.send(
+            new UpdateCommand({
+              TableName: ZOHO_CUSTOMERS_TABLE,
+              Key: { zoho_id: zohoId },
+              UpdateExpression:
+                "SET #name = :name, phone = :phone, brand = :brand, salesman_name = :salesman, synced_at = :now",
+              ExpressionAttributeNames: {
+                "#name": "name", // 'name' is reserved word in DynamoDB
+              },
+              ExpressionAttributeValues: {
+                ":name": name,
+                ":phone": phone,
+                ":brand": brand,
+                ":salesman": salesman,
+                ":now": now,
+              },
+            }),
+          );
+          results.updated++;
+        } else {
+          // ✅ New contact → INSERT
+          await ddb.send(
+            new PutCommand({
+              TableName: ZOHO_CUSTOMERS_TABLE,
+              Item: {
+                zoho_id: zohoId, // PK
+                name,
+                phone,
+                brand,
+                salesman_name: salesman,
+                synced_at: now,
+                created_at: now,
+              },
+            }),
+          );
+          results.added++;
+        }
+      } catch (err) {
+        console.error(`❌ Sync error for ${contact.contact_id}:`, err.message);
+        results.errors.push({
+          zoho_id: contact.contact_id,
+          error: err.message,
+        });
+      }
+    }
+
+    hasMore = res.data.page_context?.has_more_page || false;
+    page++;
+  }
+
+  console.log("✅ Zoho Customer Sync done:", results);
+  return results;
+};
+
 module.exports = {
   getAccessToken,
   getShopSales,
@@ -474,4 +606,5 @@ module.exports = {
   findContactByPhone,
   getAnalyticsAccessToken,
   getAnalyticsWorkspaces,
+  syncZohoCustomers, // ✅ புதுசா add
 };
