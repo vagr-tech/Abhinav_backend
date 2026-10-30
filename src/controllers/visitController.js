@@ -235,7 +235,7 @@ exports.getVisits = async (req, res) => {
     // ✅ Read from cache — no Zoho API call
     let zoho_sales = [];
     if (role !== "driver" && visits.length > 0) {
-      const { getZohoCacheForShop } = require("../Readzohocache");
+      const { getZohoCacheForShop } = require("../../Readzohocache.js");
 
       // getVisits.js - இந்த part மட்டும் மாத்து
       zoho_sales = (
