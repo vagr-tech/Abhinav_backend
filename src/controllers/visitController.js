@@ -1,5 +1,5 @@
 const cron = require("node-cron");
-const ddb = require("../config/dynamo");
+const ddb = require("../config/dynamo.js");
 const {
   PutCommand,
   ScanCommand,
